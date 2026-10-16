@@ -11,8 +11,7 @@ const { ConnectionManager } = require('./cdp/ConnectionManager');
 // because polling them every cycle re-submits the last chat input endlessly,
 // causing the "last command keeps executing" bug. See the detailed`n// exclusion comment below for the full rationale.
 const ACCEPT_COMMANDS = [
-    'antigravity.agent.acceptAgentStep',
-    'chatEditing.acceptAllFiles'
+    'antigravity.agent.acceptAgentStep'
 ];
 
 // NOTE: 'workbench.action.chat.acceptInput' and 'workbench.action.chat.submit'
@@ -42,11 +41,13 @@ const TERMINAL_ACCEPT_COOLDOWN_MS = 5000; // 5s cooldown after each acceptance
 // Context keys used to detect modal UI overlays (Quick Pick, Command Palette, etc.)
 // When any of these are true, polling is paused to prevent interference.
 const MODAL_CONTEXT_KEYS = [
-    'inQuickOpen',           // Quick Pick / Command Palette is open
-    'suggestWidgetVisible',  // Autocomplete suggest widget
-    'renameInputVisible',    // Rename input box
-    'findWidgetVisible',     // Find/Replace widget
-    'parameterHintsVisible'  // Parameter hints popup
+    'inQuickOpen',              // Quick Pick / Command Palette is open
+    'suggestWidgetVisible',     // Autocomplete suggest widget
+    'renameInputVisible',       // Rename input box
+    'findWidgetVisible',        // Find/Replace widget
+    'parameterHintsVisible',    // Parameter hints popup
+    'chatInputHasFocus',        // Chat input has focus (user is writing in chat!)
+    'interactive.inputFocused'  // Interactive editor chat input
 ];
 
 class AutoAcceptManager {
@@ -59,6 +60,7 @@ class AutoAcceptManager {
         // Idle mode: slow down polling when no buttons have been clicked recently
         this._lastAcceptTime = 0;
         this._idleThresholdMs = 30000; // 30 seconds
+        this._acceptedEvents = [];
     }
 
     initialize(context) {
@@ -107,7 +109,7 @@ class AutoAcceptManager {
         // CDP 포트를 찾지 못해도 soft-fail: VS Code 명령 API 폴링은 계속 가능
         this.log(`[CDP] ⚠ No CDP port found — AutoAccept will run in VS Code command-only mode`);
         this.cdpAvailable = false;
-        
+
         // 윈도우 환경에서 CDP 포트가 안 열려있으면 단축키 자동 패치를 시도합니다.
         // F5 디버깅 환경(ExtensionMode.Development === 2)에서는 단축키 기반이 아니므로 패치를 스킵.
         // 이미 패치를 완료했다면 반복 알림을 방지합니다.
@@ -152,6 +154,24 @@ class AutoAcceptManager {
     dispose() {
         this._stopPolling();
     }
+
+    recordAcceptedEvent(text) {
+        if (!this._acceptedEvents) this._acceptedEvents = [];
+        const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        this._acceptedEvents.push({
+            time: timeStr,
+            text: text
+        });
+        if (this._acceptedEvents.length > 100) this._acceptedEvents.shift();
+    }
+
+    getAcceptedSummary() {
+        if (!this._acceptedEvents || this._acceptedEvents.length === 0) {
+            return 'ℹ️ No se han registrado acciones automáticas en esta sesión.';
+        }
+        return this._acceptedEvents.slice(-30).map(e => '• `' + e.time + '` ─ ' + e.text).join('\n');
+    }
+
 
     // ─── Internal ─────────────────────────────────────────────────────
 
@@ -240,6 +260,10 @@ class AutoAcceptManager {
                         lastTerminalAcceptTime = now;
                         this._lastAcceptTime = now;
                         this.log('[AutoAccept] Terminal command accepted (cooldown started)');
+                        this.recordAcceptedEvent('Comando de terminal aprobado');
+                        if (this.onActionAccepted) {
+                            try { this.onActionAccepted('Comando de terminal'); } catch(e) {}
+                        }
                     }
                 }
 
