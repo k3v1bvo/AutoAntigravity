@@ -334,10 +334,15 @@ function buildDOMObserverScript(customTexts) {
                     var container = btn.closest('form, [role="dialog"], .interactive-question, [class*="question"]') || btn.parentElement;
                     if (container) {
                         var radios = container.querySelectorAll('input[type="radio"], [role="radio"]');
-                        // One pick per radio group (by name); groups where the user already chose are left alone.
+                        // One pick per radio group (input name, or the nearest ARIA radiogroup);
+                        // groups where the user already chose are left alone.
                         var groups = {};
                         for (var r = 0; r < radios.length; r++) {
-                            var g = radios[r].getAttribute('name') || '';
+                            var g = radios[r].getAttribute('name');
+                            if (!g) {
+                                var rg = radios[r].closest('[role="radiogroup"]');
+                                g = rg ? 'rg:' + _domPath(rg) : '';
+                            }
                             if (!groups[g]) groups[g] = { first: radios[r], checked: false };
                             if (radios[r].checked || radios[r].getAttribute('aria-checked') === 'true') groups[g].checked = true;
                         }

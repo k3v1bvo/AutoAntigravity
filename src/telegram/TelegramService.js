@@ -400,13 +400,16 @@ class TelegramService {
                 else if (this.onTaskRequest) this.onTaskRequest(args);
                 return;
             default: {
-                // Dynamic workflow slash command: /workflow-name optional args (only known workflows run)
-                let isKnownWorkflow = false;
+                // Dynamic workflow slash command: /workflow-name optional args (only known workflows run).
+                // Accept both the Telegram-normalized name (review_code) and the file name (review-code);
+                // the IDE receives the real file name.
+                let workflow = null;
                 try {
-                    isKnownWorkflow = scanWorkflows(this._workspaceRoot).some(w => w.command.toLowerCase() === cmd);
+                    workflow = scanWorkflows(this._workspaceRoot).find(w =>
+                        w.command.toLowerCase() === cmd || w.originalName.toLowerCase() === cmd) || null;
                 } catch (e) { /* no workspace */ }
-                if (isKnownWorkflow && this.onWorkflowRequest) {
-                    this.onWorkflowRequest(cmdName, args);
+                if (workflow && this.onWorkflowRequest) {
+                    this.onWorkflowRequest(workflow.originalName, args);
                 } else {
                     this.sendMessage(t('tg.unknown_command', { cmd: cmdName }));
                 }

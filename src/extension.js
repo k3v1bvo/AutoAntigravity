@@ -187,10 +187,9 @@ function connectTelegram(context) {
 
     // 텔레그램 → 플러그인: /prd 명령 수신 시 idle이면 즉시 /write-prd 워크플로우 실행, 아니면 큐에 추가
     telegramService.onPrdRequest = async (text) => {
-        const state = ralphLoop.getState();
         const prompt = '/write-prd ' + text;
 
-        if (state === LoopState.IDLE) {
+        if (!ralphLoop.isBusy()) {
             // Git 세션 초기화
             _initGitSessionIfIdle(text);
 
@@ -366,7 +365,7 @@ function connectTelegram(context) {
     // 텔레그램 → 플러그인: Ralph Loop 시작
     telegramService.onStartRequest = () => {
         const state = ralphLoop.getState();
-        if (state === LoopState.RUNNING) {
+        if (state === LoopState.RUNNING || ralphLoop.isBusy()) {
             telegramService.sendMessage(t('tg.already_running'));
         } else {
             ralphLoop.start().then(() => {
@@ -923,13 +922,13 @@ function activate(context) {
     context.subscriptions.push(
         vscode.commands.registerCommand('autoAntigravity.connectTelegram', async () => {
             if (telegramService) {
-                vscode.window.showInformationMessage('AutoAntigravity: Telegram Bot is already connected! 🤖');
+                vscode.window.showInformationMessage(t('ext.tg_already_connected'));
             } else {
                 connectTelegram(context);
                 if (telegramService) {
-                    vscode.window.showInformationMessage('AutoAntigravity: Telegram Bot connected successfully! 🚀');
+                    vscode.window.showInformationMessage(t('ext.tg_connected'));
                 } else {
-                    vscode.window.showErrorMessage('AutoAntigravity: Could not connect Telegram Bot. Please check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.');
+                    vscode.window.showErrorMessage(t('ext.tg_connect_failed'));
                 }
             }
         })
@@ -937,7 +936,7 @@ function activate(context) {
     context.subscriptions.push(
         vscode.commands.registerCommand('autoAntigravity.disconnectTelegram', async () => {
             disconnectTelegram();
-            vscode.window.showInformationMessage('AutoAntigravity: Telegram Bot disconnected.');
+            vscode.window.showInformationMessage(t('ext.tg_disconnected'));
         })
     );
 

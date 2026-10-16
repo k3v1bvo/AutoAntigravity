@@ -84,6 +84,22 @@ test('/model matches the exact token; /models and unknown slashes are rejected',
     assert.ok(s.sent[1].includes('/nope'));
 });
 
+test('workflows dispatch by normalized or file name; the IDE gets the file name', () => {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'aa-wf-'));
+    fs.mkdirSync(path.join(ws, '.agent', 'workflows'), { recursive: true });
+    fs.writeFileSync(path.join(ws, '.agent', 'workflows', 'review-code.md'), '---\ndescription: Review\n---\n');
+    const s = makeService();
+    s._workspaceRoot = ws;
+    s._handleMessage(msg('/review_code src/a.js'));
+    s._handleMessage(msg('/review-code@bot src/b.js'));
+    s._handleMessage(msg('/review'));
+    assert.deepStrictEqual(s.calls, [
+        ['onWorkflowRequest', 'review-code', 'src/a.js'],
+        ['onWorkflowRequest', 'review-code', 'src/b.js'],
+    ]);
+    assert.strictEqual(s.sent.length, 1);
+});
+
 test('model aliases resolve to menu keywords; unknown values are rejected', () => {
     assert.strictEqual(resolveModelAlias('Sonnet'), 'sonnet');
     assert.strictEqual(resolveModelAlias(' gemini   PRO '), 'gemini pro');
