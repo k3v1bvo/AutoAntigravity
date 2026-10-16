@@ -29,6 +29,8 @@ class TelegramService {
         this.onTaskRequest = null;
         this.onPrdRequest = null;
         this.onChatRequest = null;
+        this.onModelRequest = null;
+        this.onResumenRequest = null;
 
         // Notification detail level
         this.detailedNotification = false;
@@ -53,6 +55,7 @@ class TelegramService {
     async start(botToken, chatId, workspaceRoot) {
         this._botToken = botToken;
         this._chatId = chatId;
+        this._workspaceRoot = workspaceRoot;
         this._polling = true;
 
         await this.setMyCommands(workspaceRoot);
@@ -86,25 +89,27 @@ class TelegramService {
             if (!this._botToken || !this._chatId) return;
 
             const maxLen = 4096;
-            if (text.length <= maxLen) {
-                await this._telegramApiCall('sendMessage', {
-                    chat_id: this._chatId,
-                    text,
-                    parse_mode: 'Markdown'
-                });
-            } else {
-                // Split into chunks
-                for (let i = 0; i < text.length; i += maxLen) {
-                    const chunk = text.substring(i, i + maxLen);
+            for (let i = 0; i < text.length; i += maxLen) {
+                const chunk = text.substring(i, i + maxLen);
+                try {
                     await this._telegramApiCall('sendMessage', {
                         chat_id: this._chatId,
                         text: chunk,
                         parse_mode: 'Markdown'
                     });
+                } catch (markdownErr) {
+                    try {
+                        await this._telegramApiCall('sendMessage', {
+                            chat_id: this._chatId,
+                            text: chunk
+                        });
+                    } catch (plainErr) {
+                        this._log('[Telegram] sendMessage error: ' + plainErr.message);
+                    }
                 }
             }
         } catch (err) {
-            this._log(`[Telegram] sendMessage 오류: ${err.message}`);
+            this._log('[Telegram] sendMessage error: ' + err.message);
         }
     }
 
@@ -331,33 +336,46 @@ class TelegramService {
         // --- Text-only handling (existing flow) ---
         if (!message.text) return;
 
-        const text = message.text.trim();
+        // Strip bot username mention like /model@my_bot -> /model
+        let text = message.text.trim();
+        if (text.startsWith('/')) {
+            text = text.replace(/@[a-zA-Z0-9_]+/g, '').trim();
+        }
 
-        if (text === '/help') {
-            if (this.onHelpRequest) this.onHelpRequest();
-        } else if (text === '/status') {
+const lower = text.toLowerCase();
+
+        if (lower.startsWith('/model')) {
+            const modelArg = text.replace(/^\/model\s*/i, '').trim();
+            if (this.onModelRequest) {
+                this.onModelRequest(modelArg);
+            }
+        } else if (lower === '/resumen' || lower === '/acciones') {
+            if (this.onResumenRequest) {
+                this.onResumenRequest();
+            }
+        } else if (lower === '/status' || lower === '/cuota') {
             if (this.onStatusRequest) this.onStatusRequest();
-        } else if (text === '/start') {
+        } else if (lower === '/help' || lower === '/ayuda') {
+            if (this.onHelpRequest) this.onHelpRequest();
+        } else if (lower === '/start') {
             if (this.onStartRequest) this.onStartRequest();
-        } else if (text === '/stop') {
+        } else if (lower === '/stop') {
             if (this.onStopRequest) this.onStopRequest();
-        } else if (text === '/autoaccept') {
+        } else if (lower === '/autoaccept') {
             if (this.onAutoAcceptRequest) this.onAutoAcceptRequest();
-        } else if (text === '/config') {
+        } else if (lower === '/config') {
             if (this.onConfigRequest) this.onConfigRequest();
-        } else if (text === '/queue') {
+        } else if (lower === '/queue') {
             if (this.onQueueRequest) this.onQueueRequest();
-        } else if (text.startsWith('/prd')) {
-            // /prd 명령: 뒤의 텍스트를 onPrdRequest 콜백으로 전달 (write-prd 워크플로우)
-            const prdText = text.replace(/^\/prd\s*/, '').trim();
+        } else if (lower.startsWith('/prd')) {
+            const prdText = text.replace(/^\/prd\s*/i, '').trim();
             if (!prdText) {
                 this.sendMessage(t('tg.prd_usage'));
             } else if (this.onPrdRequest) {
                 this.onPrdRequest(prdText);
             }
-        } else if (text.startsWith('/task')) {
-            // /task 명령: 뒤의 텍스트를 onTaskRequest 콜백으로 직접 전달 (대화 형식)
-            const taskText = text.replace(/^\/task\s*/, '').trim();
+        } else if (lower.startsWith('/task')) {
+            const taskText = text.replace(/^\/task\s*/i, '').trim();
             if (!taskText) {
                 this.sendMessage(t('tg.task_usage'));
             } else if (this.onTaskRequest) {
@@ -366,16 +384,45 @@ class TelegramService {
         } else if (text.startsWith('/')) {
             // Dynamic workflow slash command: /workflow-name optional args
             const match = text.match(/^\/([a-zA-Z0-9_-]+)\s*(.*)/s);
-            if (match && this.onWorkflowRequest) {
-                this.onWorkflowRequest(match[1], match[2].trim());
+            if (match) {
+                const cmdName = match[1];
+                const argsText = match[2].trim();
+                let isKnownWorkflow = false;
+                try {
+                    const workflows = scanWorkflows(this._workspaceRoot);
+                    isKnownWorkflow = workflows.some(w => w.command.toLowerCase() === cmdName.toLowerCase());
+                } catch (e) { }
+
+                if (isKnownWorkflow && this.onWorkflowRequest) {
+                    this.onWorkflowRequest(cmdName, argsText);
+                } else {
+                    this.sendMessage(
+                        `❌ Comando no reconocido: \`/${cmdName}\`\n\n` +
+                        `📌 *Comandos disponibles:*\n` +
+                        `• \`/cuota\` o \`/status\` — Ver cuota de IA y estado\n` +
+                        `• \`/resumen\` — Ver registro de acciones auto-aceptadas\n` +
+                        `• \`/model\` — Ver o cambiar modelo (/model [nombre])\n` +
+                        `• \`/autoaccept\` — Activar/desactivar auto-aceptación\n` +
+                        `• \`/help\` — Ver lista completa de comandos\n\n` +
+                        `💡 _No se ejecutan comandos desconocidos ni se envían a Antigravity._`
+                    );
+                }
             }
         } else {
-            // 일반 텍스트 메시지 → AI 대화로 전달
-            if (this.onChatRequest) {
-                this.onChatRequest(text);
-            }
+            // Mensaje de texto plano (NO es comando slash)
+            // CRÍTICO: NO ENVIAR a chats ni sesiones de Antigravity (evita interferir en sesiones activas).
+            this.sendMessage(
+                `ℹ️ *Mensaje no enviado a Antigravity.*\n` +
+                `Para no interrumpir ni abrir chats en tus sesiones de Antigravity, el bot de Telegram solo atiende comandos.\n\n` +
+                `📌 *Comandos principales:*\n` +
+                `• \`/cuota\` o \`/status\` — Ver cuota de IA disponible y estado\n` +
+                `• \`/resumen\` — Ver las acciones auto-aceptadas en sesión\n` +
+                `• \`/model\` — Ver o cambiar modelo de IA\n` +
+                `• \`/help\` — Ayuda de comandos`
+            );
         }
     }
+
 
     /**
      * Make a POST request to the Telegram Bot API.
@@ -501,6 +548,7 @@ class TelegramService {
             // 1) 기존 하드코딩 명령어
             const builtInCommands = [
                 { command: 'help', description: t('tg.cmd_help') },
+                { command: 'cuota', description: 'Consultar cuota y modelos de IA disponibles' },
                 { command: 'status', description: t('tg.cmd_status') },
                 { command: 'start', description: t('tg.cmd_start') },
                 { command: 'stop', description: t('tg.cmd_stop') },
@@ -508,7 +556,9 @@ class TelegramService {
                 { command: 'config', description: t('tg.cmd_config') },
                 { command: 'queue', description: t('tg.cmd_queue') },
                 { command: 'task', description: t('tg.cmd_task') },
-                { command: 'prd', description: t('tg.cmd_prd') }
+                { command: 'prd', description: t('tg.cmd_prd') },
+                { command: 'model', description: 'Consultar o cambiar modelo de IA (/model [nombre])' },
+                { command: 'resumen', description: 'Ver resumen de acciones automáticas' }
             ];
 
             // 2) 동적 워크플로우 명령어 스캔 (공유 헬퍼 사용)

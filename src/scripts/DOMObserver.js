@@ -21,6 +21,12 @@ function buildDOMObserverScript(customTexts) {
         'confirm', '승인', '확인',
         'approve', '승인',
         'yes', '예', 'はい', '是',
+        'submit', '제출', '送信', '提交', 'enviar',
+        'proceed', '진행', '進行', 'proceder',
+        'allow once', '한 번 허용', '1回許可', 'permitir una vez', 'permitir esta vez',
+        'permitir', 'permitir siempre', 'permitir todo',
+        'ejecutar', 'ejecutar todo', 'ejecutar en terminal', 'run in terminal', 'terminal run',
+        'aceptar', 'aprobar', 'allow always',
         ...customTexts
     ];
     const expandTexts = [
@@ -318,7 +324,36 @@ function buildDOMObserverScript(customTexts) {
         return null;
     }
 
+    function handleInteractiveQuestions() {
+        try {
+            var allBtns = document.querySelectorAll('button');
+            for (var i = 0; i < allBtns.length; i++) {
+                var btn = allBtns[i];
+                var t = (btn.textContent || '').trim().toLowerCase();
+                if (t === 'submit' || t === 'enviar' || t === 'proceed' || t === 'continuar') {
+                    var container = btn.closest('form, [role="dialog"], .interactive-question, [class*="question"]') || btn.parentElement;
+                    if (container) {
+                        var radios = container.querySelectorAll('input[type="radio"], [role="radio"]');
+                        if (radios.length > 0) {
+                            var anyChecked = false;
+                            for (var r = 0; r < radios.length; r++) {
+                                if (radios[r].checked || radios[r].getAttribute('aria-checked') === 'true') {
+                                    anyChecked = true;
+                                    break;
+                                }
+                            }
+                            if (!anyChecked) {
+                                radios[0].click();
+                            }
+                        }
+                    }
+                }
+            }
+        } catch(e) {}
+    }
+
     function scanAndClick() {
+        handleInteractiveQuestions();
         pruneCooldowns();
         var match = findMatchingButton(document.body, BUTTON_TEXTS, EXPAND_TEXTS);
         if (match) {
@@ -326,6 +361,7 @@ function buildDOMObserverScript(customTexts) {
             var key = _domPath(btn) + ':' + (btn.textContent || '').trim().toLowerCase().substring(0, 30);
             clickCooldowns[key] = Date.now();
             btn.click();
+            try { console.log('[AA_LOG] [AutoAccept] Aprobado: ' + match.text); } catch(e){}
             return 'clicked:' + match.text;
         }
 

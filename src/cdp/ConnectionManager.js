@@ -509,6 +509,9 @@ class ConnectionManager {
         if (typeof firstArg === 'string' && firstArg.includes(prefixFlag)) {
             const texts = params.args.map(a => a.value || JSON.stringify(a.value)).join(' ');
             this.log(`[CDP Debug] ${texts}`);
+            if (this.onActionAccepted) {
+                try { this.onActionAccepted(texts.replace(prefixFlag, '').trim()); } catch(e) {}
+            }
         }
     }
 
