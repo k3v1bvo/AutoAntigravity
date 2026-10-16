@@ -6,6 +6,8 @@
     "cmd.stopRalphLoop": "AutoAntigravity: Stop Ralph Loop",
     "cmd.selectTaskFile": "AutoAntigravity: Select Task File",
     "cmd.pushNow": "AutoAntigravity: Git Push",
+    "cmd.connectTelegram": "AutoAntigravity: Connect Telegram Bot",
+    "cmd.disconnectTelegram": "AutoAntigravity: Disconnect Telegram Bot",
     "view.ralphLoop": "Control Panel",
     "cfg.pollInterval": "Auto Accept polling interval in milliseconds",
     "cfg.customButtonTexts": "Extra button texts to auto-click (for i18n or custom UI)",

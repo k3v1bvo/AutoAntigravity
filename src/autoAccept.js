@@ -5,13 +5,15 @@ const vscode = require('vscode');
 const cp = require('child_process');
 const http = require('http');
 const { ConnectionManager } = require('./cdp/ConnectionManager');
+const { t } = require('./i18n');
 
 // Antigravity-specific accept commands (always polled every cycle).
 // NOTE: chat.acceptInput and chat.submit were REMOVED from this list
 // because polling them every cycle re-submits the last chat input endlessly,
 // causing the "last command keeps executing" bug. See the detailed`n// exclusion comment below for the full rationale.
 const ACCEPT_COMMANDS = [
-    'antigravity.agent.acceptAgentStep'
+    'antigravity.agent.acceptAgentStep',
+    'chatEditing.acceptAllFiles'
 ];
 
 // NOTE: 'workbench.action.chat.acceptInput' and 'workbench.action.chat.submit'
@@ -45,9 +47,10 @@ const MODAL_CONTEXT_KEYS = [
     'suggestWidgetVisible',     // Autocomplete suggest widget
     'renameInputVisible',       // Rename input box
     'findWidgetVisible',        // Find/Replace widget
-    'parameterHintsVisible',    // Parameter hints popup
-    'chatInputHasFocus',        // Chat input has focus (user is writing in chat!)
-    'interactive.inputFocused'  // Interactive editor chat input
+    'parameterHintsVisible'     // Parameter hints popup
+    // NOTE: 'chatInputHasFocus' / 'interactive.inputFocused' are deliberately NOT here —
+    // the chat input keeps focus after Enter, which would pause command-based accepting
+    // for the whole agent run.
 ];
 
 class AutoAcceptManager {
@@ -60,7 +63,9 @@ class AutoAcceptManager {
         // Idle mode: slow down polling when no buttons have been clicked recently
         this._lastAcceptTime = 0;
         this._idleThresholdMs = 30000; // 30 seconds
+        // Audit buffer for /summary: last 100 auto-accepted actions + total count for the session
         this._acceptedEvents = [];
+        this._acceptedTotal = 0;
     }
 
     initialize(context) {
@@ -156,22 +161,16 @@ class AutoAcceptManager {
     }
 
     recordAcceptedEvent(text) {
-        if (!this._acceptedEvents) this._acceptedEvents = [];
         const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        this._acceptedEvents.push({
-            time: timeStr,
-            text: text
-        });
+        this._acceptedEvents.push({ time: timeStr, text });
+        this._acceptedTotal++;
         if (this._acceptedEvents.length > 100) this._acceptedEvents.shift();
     }
 
     getAcceptedSummary() {
-        if (!this._acceptedEvents || this._acceptedEvents.length === 0) {
-            return 'ℹ️ No se han registrado acciones automáticas en esta sesión.';
-        }
+        if (this._acceptedEvents.length === 0) return t('tg.summary_empty');
         return this._acceptedEvents.slice(-30).map(e => '• `' + e.time + '` ─ ' + e.text).join('\n');
     }
-
 
     // ─── Internal ─────────────────────────────────────────────────────
 
@@ -260,9 +259,8 @@ class AutoAcceptManager {
                         lastTerminalAcceptTime = now;
                         this._lastAcceptTime = now;
                         this.log('[AutoAccept] Terminal command accepted (cooldown started)');
-                        this.recordAcceptedEvent('Comando de terminal aprobado');
                         if (this.onActionAccepted) {
-                            try { this.onActionAccepted('Comando de terminal'); } catch(e) {}
+                            try { this.onActionAccepted(t('tg.audit_terminal')); } catch (e) { /* ignore */ }
                         }
                     }
                 }

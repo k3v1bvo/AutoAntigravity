@@ -10,6 +10,8 @@ const { TelemetryService } = require('./telemetry/TelemetryService');
 const { TelegramService } = require('./telegram/TelegramService');
 const { scanWorkflows } = require('./telegram/scanWorkflows');
 const { t } = require('./i18n');
+const { loadTelegramCredentials } = require('./telegram/loadCredentials');
+const { createModelHandler } = require('./telegram/modelCommand');
 
 let autoAccept = null;
 let ralphLoop = null;
@@ -130,55 +132,15 @@ async function _waitAndSendImages(imagesBefore) {
 // ─── Telegram Connect / Disconnect ────────────────────────────────────
 function connectTelegram(context) {
     _extensionContext = context;
-    // .env 파일에서 TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID 읽기
-    let botToken = '';
-    let chatId = '';
+    // TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID: 워크스페이스 .env → ~/.telegram_antigravity.env (항상 쌍으로만 로드)
     const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (workspaceFolders && workspaceFolders.length > 0) {
-        const fs = require('fs');
-        const path = require('path');
-        const envPath = path.join(workspaceFolders[0].uri.fsPath, '.env');
-        if (fs.existsSync(envPath)) {
-            const envContent = fs.readFileSync(envPath, 'utf-8');
-            for (const line of envContent.split('\n')) {
-                const trimmed = line.trim();
-                if (trimmed.startsWith('TELEGRAM_BOT_TOKEN=')) {
-                    botToken = trimmed.substring('TELEGRAM_BOT_TOKEN='.length).trim();
-                } else if (trimmed.startsWith('TELEGRAM_CHAT_ID=')) {
-                    chatId = trimmed.substring('TELEGRAM_CHAT_ID='.length).trim();
-                }
-            }
-        } else {
-            log('[Telegram] .env 파일이 없습니다: ' + envPath);
-        }
-    }
+    const creds = loadTelegramCredentials(workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0].uri.fsPath : undefined);
+    const { botToken, chatId } = creds;
     if (!botToken || !chatId) {
-        try {
-            const os = require('os');
-            const fs = require('fs');
-            const path = require('path');
-            const globalEnv = path.join(os.homedir(), '.telegram_antigravity.env');
-            if (fs.existsSync(globalEnv)) {
-                const gContent = fs.readFileSync(globalEnv, 'utf-8');
-                for (const line of gContent.split('\n')) {
-                    const trimmed = line.trim();
-                    if (!botToken && trimmed.startsWith('TELEGRAM_BOT_TOKEN=')) {
-                        botToken = trimmed.substring('TELEGRAM_BOT_TOKEN='.length).trim();
-                    } else if (!chatId && trimmed.startsWith('TELEGRAM_CHAT_ID=')) {
-                        chatId = trimmed.substring('TELEGRAM_CHAT_ID='.length).trim();
-                    }
-                }
-                if (botToken && chatId) {
-                    log('[Telegram] Loaded credentials from global ~/.telegram_antigravity.env');
-                }
-            }
-        } catch (e) { log('[Telegram] Global env error: ' + e.message); }
-    }
-
-    if (!botToken || !chatId) {
-        log('[Telegram] 텔레그램 활성화되었으나 botToken 또는 chatId가 비어있습니다.');
+        log('[Telegram] 텔레그램 활성화되었으나 botToken 또는 chatId가 비어있습니다. (' + creds.reason + ')');
         return;
     }
+    log('[Telegram] Credentials loaded from ' + creds.source);
 
     telegramService = new TelegramService(log);
 
@@ -257,78 +219,107 @@ function connectTelegram(context) {
         }
     };
 
-    // 텔레그램 → 플러그인: 일반 대화 메시지 수신 시 (Desactivado para no inyectar en chats de Antigravity)
+    // 텔레그램 → 플러그인: 일반 대화 메시지 수신 시 AI에 전달 후 응답 회신
     telegramService.onChatRequest = async (text) => {
-        log(`[Telegram] ℹ️ Chat directo bloqueado para no interferir con las sesiones: ${text.substring(0, 40)}`);
-        telegramService.sendMessage(
-            'ℹ️ Los mensajes de texto ordinarios no se envían a Antigravity para no interferir con tus chats. Usa /cuota, /status o /help.'
-        );
+        const isIdle = !ralphLoop.isBusy();
+
+        if (isIdle) {
+            ralphLoop.setStandaloneRunning(true);
+            // Git 세션 초기화
+            _initGitSessionIfIdle(text);
+
+            try {
+                log(`[Telegram] 💬 일반 대화 프롬프트 전송: ${text.substring(0, 80)}`);
+                await ralphLoop._sendToAgent(text, []);
+                telegramService.sendMessage(t('tg.chat_processing'));
+                log(`[Telegram] ✅ 일반 대화 프롬프트 전송 완료`);
+
+                // 에이전트 완료 대기 후 응답 추출
+                await ralphLoop._waitForAgentCompletion();
+                log(`[Telegram] ✅ 에이전트 대화 응답 완료`);
+
+                // CDP로 마지막 에이전트 응답 추출
+                const response = await ralphLoop._getLastAgentResponse();
+                if (response) {
+                    telegramService.sendMessage(`🤖 ${response}`);
+                    log(`[Telegram] 📤 대화 응답 텔레그램 전송 완료 (${response.length}자)`);
+                } else {
+                    telegramService.sendMessage(t('tg.chat_extract_fail'));
+                    log(`[Telegram] ⚠ 대화 응답 추출 실패`);
+                }
+                ralphLoop.setStandaloneRunning(false);
+            } catch (err) {
+                ralphLoop.setStandaloneRunning(false);
+                log(`[Telegram] ❌ 일반 대화 처리 실패: ${err.message}`);
+                telegramService.sendMessage(`${t('tg.chat_failed')} ${err.message}`);
+            }
+        } else if (sidebarProvider) {
+            // Ralph Loop가 실행 중이면 작업 큐에 추가 (type: 'chat')
+            sidebarProvider._taskQueue.push({ text, mediaPaths: [], type: 'chat' });
+            sidebarProvider.updateState();
+            telegramService.sendMessage(`${t('tg.chat_queued')} (${sidebarProvider._taskQueue.length}): ${text.substring(0, 80)}`);
+            log('[Telegram] 대화 큐에 추가: ' + text.substring(0, 80));
+        } else {
+            telegramService.sendMessage(t('tg.sidebar_not_init'));
+        }
+    };
+
+    // 텔레그램 → 플러그인: /model — 모델 조회/전환 (별칭 검증, 작업 중 거부, 전환 결과 검증)
+    telegramService.onModelRequest = createModelHandler({
+        ralphLoop,
+        send: (m) => telegramService.sendMessage(m),
+        log,
+    });
+
+    // 텔레그램 → 플러그인: /summary — 자동 승인 기록 조회
+    telegramService.onSummaryRequest = () => {
+        const autoAcceptState = autoAccept && autoAccept.isEnabled ? 'ON ⚡' : 'OFF 🔴';
+        telegramService.sendMessage([
+            t('tg.summary_title'),
+            ``,
+            `${t('tg.status_autoaccept')} ${autoAcceptState}`,
+            `${t('tg.summary_count')} ${autoAccept ? autoAccept._acceptedTotal : 0}`,
+            ``,
+            autoAccept ? autoAccept.getAcceptedSummary() : t('tg.summary_empty'),
+        ].join('\n'));
     };
 
     // 텔레그램 → 플러그인: 도움말
-    
-    // Telegram /model command handler
-    telegramService.onModelRequest = async (arg) => {
-        try {
-            const cleanArg = (arg || '').replace(/@[a-zA-Z0-9_]+/g, '').trim();
-            if (!cleanArg) {
-                const current = await ralphLoop._getCurrentModel();
-                await telegramService.sendMessage(
-                    '🤖 *Modelo actual:* `' + (current || 'Desconocido') + '`\n\n' +
-                    '📌 *Para cambiar de modelo envía:*\n' +
-                    '• `/model sonnet` (Claude Sonnet 4.6)\n' +
-                    '• `/model opus` (Claude Opus 4.6)\n' +
-                    '• `/model gemini pro` (Gemini 3.1 Pro)\n' +
-                    '• `/model flash` (Gemini 3.8 Flash)'
-                );
-            } else {
-                await telegramService.sendMessage('🔄 Cambiando modelo a: *' + cleanArg + '*...');
-                const ok = await ralphLoop._switchModel(cleanArg);
-                if (ok) {
-                    const current = await ralphLoop._getCurrentModel();
-                    await telegramService.sendMessage('✅ *Modelo cambiado exitosamente a:* `' + (current || cleanArg) + '`');
-                } else {
-                    await telegramService.sendMessage('❌ No se pudo cambiar el modelo a "' + cleanArg + '". Opciones: sonnet, opus, gemini pro, flash.');
-                }
-            }
-        } catch (e) {
-            await telegramService.sendMessage('❌ Error al cambiar modelo: ' + e.message);
-        }
-    };
-
-    // Telegram /resumen command handler
-    telegramService.onResumenRequest = async () => {
-        try {
-            const summary = autoAccept.getAcceptedSummary();
-            const count = (autoAccept._acceptedEvents || []).length;
-            const autoAcceptState = autoAccept && autoAccept.isEnabled ? 'Activado ✅' : 'Desactivado 🔴';
-            await telegramService.sendMessage(
-                '📋 *Registro de Acciones Auto-Aceptadas*\n\n' +
-                '⚡ *AutoAccept:* ' + autoAcceptState + '\n' +
-                '📊 *Acciones registradas en sesión:* `' + count + '`\n\n' +
-                summary + '\n\n' +
-                '💡 _Sin notificaciones automáticas para no saturar. Consulta este registro cuando quieras con /resumen._'
-            );
-        } catch (e) {
-            await telegramService.sendMessage('❌ Error al obtener resumen: ' + e.message);
-        }
-    };
-
     telegramService.onHelpRequest = () => {
         const lines = [
-            '🤖 *Comandos disponibles de AutoAntigravity:*',
-            '',
-            '• `/cuota` o `/status` — Consultar cuota de IA disponible y estado',
-            '• `/resumen` — Ver registro de acciones auto-aceptadas',
-            '• `/model [nombre]` — Consultar o cambiar modelo de IA (/model sonnet, /model opus)',
-            '• `/autoaccept` — Activar o desactivar auto-aceptación de acciones',
-            '• `/queue` — Ver cola de tareas',
-            '• `/start` — Iniciar bucle Ralph',
-            '• `/stop` — Detener bucle Ralph',
-            '• `/help` — Mostrar este mensaje de ayuda',
-            '',
-            '💡 _Las notificaciones automáticas de clics están apagadas para evitar spam. Consulta /resumen cuando desees ver el historial._'
+            t('tg.help_title'),
+            ``,
+            `/help — ${t('tg.cmd_help')}`,
+            `/status — ${t('tg.cmd_status')}`,
+            `/quota — ${t('tg.cmd_quota')}`,
+            `/start — ${t('tg.cmd_start')}`,
+            `/stop — ${t('tg.cmd_stop')}`,
+            `/autoaccept — ${t('tg.cmd_autoaccept')}`,
+            `/model [name] — ${t('tg.cmd_model')}`,
+            `/summary — ${t('tg.cmd_summary')}`,
+            `/config — ${t('tg.cmd_config')}`,
+            `/queue — ${t('tg.cmd_queue')}`,
         ];
+
+        // 동적 워크플로우 명령어 추가
+        const wsRoot = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0].uri.fsPath : undefined;
+        const builtInNames = new Set(['help', 'status', 'quota', 'start', 'stop', 'autoaccept', 'model', 'summary', 'config', 'queue']);
+        const workflows = scanWorkflows(wsRoot).filter(w => !builtInNames.has(w.command));
+        if (workflows.length > 0) {
+            lines.push(``);
+            lines.push(t('tg.help_workflow_section'));
+            for (const wf of workflows) {
+                lines.push(`/${wf.command} — ${wf.description}`);
+            }
+        }
+
+        lines.push(``);
+        lines.push(t('tg.help_task_section'));
+        lines.push(t('tg.help_task_desc'));
+        lines.push(t('tg.help_prd_desc'));
+        lines.push(``);
+        lines.push(t('tg.help_general_msg'));
+
         telegramService.sendMessage(lines.join('\n'));
     };
 
@@ -337,42 +328,35 @@ function connectTelegram(context) {
         const state = ralphLoop.getState();
         const progress = ralphLoop.taskManager.getProgress();
         const autoAcceptState = autoAccept && autoAccept.isEnabled ? 'ON ⚡' : 'OFF 🔴';
-        const acceptedCount = (autoAccept && autoAccept._acceptedEvents) ? autoAccept._acceptedEvents.length : 0;
         const queueCount = sidebarProvider ? sidebarProvider._taskQueue.length : 0;
 
         const lines = [
-            '📊 *Estado de AutoAntigravity*',
-            '',
-            `🔄 Ralph Loop: \`${state}\``,
-            `📌 Progreso: ${progress.completed}/${progress.total} (restantes: ${progress.remaining})`,
-            `⚡ AutoAccept: ${autoAcceptState}`,
-            `📋 Acciones aceptadas en sesión: \`${acceptedCount}\` (usa /resumen para el detalle)`,
-            `📥 Cola de tareas: ${queueCount}`,
+            t('tg.status_title'),
+            ``,
+            `${t('tg.status_ralph')} ${state}`,
+            `${t('tg.status_progress')} ${progress.completed}/${progress.total} (${t('tg.status_remaining')} ${progress.remaining})`,
+            `${t('tg.status_iteration')} ${ralphLoop.currentIteration}`,
+            `${t('tg.status_autoaccept')} ${autoAcceptState}`,
+            `${t('tg.status_accepted')} ${autoAccept ? autoAccept._acceptedTotal : 0}`,
+            `${t('tg.status_queue')} ${queueCount}${t('tg.status_items')}`,
         ];
 
-        // AI 사용량 정보 추가
+        // AI 사용량 정보 추가 (TelemetryService → { label, remaining: 0~1, resetTime })
         if (telemetryService) {
             const quota = telemetryService.getData();
             if (quota && quota.connected && quota.models && quota.models.length > 0) {
-                lines.push('');
-                lines.push('🤖 *Cuota y Modelos de IA:*');
+                lines.push(``);
+                lines.push(t('tg.status_ai_usage'));
                 for (const m of quota.models) {
-                    const name = m.label || m.name || 'Modelo';
-                    let pct = 0;
-                    if (typeof m.remaining === 'number') {
-                        pct = Math.round(m.remaining * 100);
-                    } else if (m.limit > 0) {
-                        pct = Math.round((m.usage / m.limit) * 100);
-                    }
-                    pct = Math.max(0, Math.min(100, pct));
-                    const filled = Math.max(0, Math.min(10, Math.round(pct / 10)));
+                    const pct = Math.max(0, Math.min(100, Math.round((typeof m.remaining === 'number' ? m.remaining : 0) * 100)));
+                    const filled = Math.round(pct / 10);
                     const bar = '█'.repeat(filled) + '░'.repeat(10 - filled);
-                    const resetInfo = m.resetTime ? ` _(resetea: ${new Date(m.resetTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})})_` : '';
-                    lines.push(`  • *${name}*: ${pct}% disponible \`[${bar}]\`${resetInfo}`);
+                    const reset = m.resetTime ? ` (${t('tg.status_reset')} ${new Date(m.resetTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` : '';
+                    lines.push(`  ${m.label || m.name}: ${pct}% ${t('tg.status_left')} [${bar}]${reset}`);
                 }
             } else if (quota && !quota.connected) {
-                lines.push('');
-                lines.push('⚠️ *Cuota de IA:* Conectando con servidor local de Antigravity...');
+                lines.push(``);
+                lines.push(t('tg.status_ai_connecting'));
             }
         }
 
@@ -439,14 +423,7 @@ function connectTelegram(context) {
 
     // 텔레그램 → 플러그인: 동적 워크플로우 명령어 수신
     telegramService.onWorkflowRequest = async (workflowName, argsText) => {
-        const wsRoot = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0].uri.fsPath : undefined;
-        const workflows = scanWorkflows(wsRoot);
-        const exists = workflows.some(w => w.command.toLowerCase() === workflowName.toLowerCase());
-        if (!exists) {
-            telegramService.sendMessage(`❌ El workflow '/${workflowName}' no existe. Usa /help para ver los comandos válidos.`);
-            return;
-        }
-
+        // (TelegramService already rejects unknown workflow names before calling this)
         const prompt = argsText ? `/${workflowName} ${argsText}` : `/${workflowName}`;
         const isIdle = !ralphLoop.isBusy();
 
@@ -655,7 +632,7 @@ function activate(context) {
     // ─── Initialize Auto Accept ───────────────────────────────────────
     autoAccept = new AutoAcceptManager(log);
     autoAccept.initialize(context);
-    // Registra silenciosamente cada acción aceptada para consultarla bajo demanda con /resumen
+    // 자동 승인된 액션을 조용히 기록 → 텔레그램 /summary 로 조회
     autoAccept.onActionAccepted = (txt) => {
         autoAccept.recordAcceptedEvent(txt);
     };

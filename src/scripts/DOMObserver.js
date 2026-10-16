@@ -334,17 +334,15 @@ function buildDOMObserverScript(customTexts) {
                     var container = btn.closest('form, [role="dialog"], .interactive-question, [class*="question"]') || btn.parentElement;
                     if (container) {
                         var radios = container.querySelectorAll('input[type="radio"], [role="radio"]');
-                        if (radios.length > 0) {
-                            var anyChecked = false;
-                            for (var r = 0; r < radios.length; r++) {
-                                if (radios[r].checked || radios[r].getAttribute('aria-checked') === 'true') {
-                                    anyChecked = true;
-                                    break;
-                                }
-                            }
-                            if (!anyChecked) {
-                                radios[0].click();
-                            }
+                        // One pick per radio group (by name); groups where the user already chose are left alone.
+                        var groups = {};
+                        for (var r = 0; r < radios.length; r++) {
+                            var g = radios[r].getAttribute('name') || '';
+                            if (!groups[g]) groups[g] = { first: radios[r], checked: false };
+                            if (radios[r].checked || radios[r].getAttribute('aria-checked') === 'true') groups[g].checked = true;
+                        }
+                        for (var k in groups) {
+                            if (!groups[k].checked) groups[k].first.click();
                         }
                     }
                 }
@@ -361,7 +359,7 @@ function buildDOMObserverScript(customTexts) {
             var key = _domPath(btn) + ':' + (btn.textContent || '').trim().toLowerCase().substring(0, 30);
             clickCooldowns[key] = Date.now();
             btn.click();
-            try { console.log('[AA_LOG] [AutoAccept] Aprobado: ' + match.text); } catch(e){}
+            try { console.log('[AA_LOG] [AutoAccept] Accepted: ' + match.text); } catch(e){}
             return 'clicked:' + match.text;
         }
 

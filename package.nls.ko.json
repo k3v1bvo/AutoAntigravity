@@ -6,6 +6,8 @@
     "cmd.stopRalphLoop": "AutoAntigravity: Ralph Loop 정지",
     "cmd.selectTaskFile": "AutoAntigravity: 작업 파일(PRD) 선택",
     "cmd.pushNow": "AutoAntigravity: Git Push",
+    "cmd.connectTelegram": "AutoAntigravity: 텔레그램 봇 연결",
+    "cmd.disconnectTelegram": "AutoAntigravity: 텔레그램 봇 연결 해제",
     "view.ralphLoop": "제어판",
     "cfg.pollInterval": "Auto Accept 폴링 주기(ms)",
     "cfg.customButtonTexts": "자동 수락을 위한 추가 버튼 텍스트 목록",

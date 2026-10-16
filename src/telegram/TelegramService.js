@@ -30,7 +30,7 @@ class TelegramService {
         this.onPrdRequest = null;
         this.onChatRequest = null;
         this.onModelRequest = null;
-        this.onResumenRequest = null;
+        this.onSummaryRequest = null;
 
         // Notification detail level
         this.detailedNotification = false;
@@ -304,6 +304,13 @@ class TelegramService {
     _handleMessage(message) {
         if (!message) return;
 
+        // --- Authorization: only the configured chat may drive the IDE (commands, media, chat relay) ---
+        const fromChat = message.chat ? message.chat.id : undefined;
+        if (String(fromChat) !== String(this._chatId)) {
+            this._log(`[Telegram] ⚠ Ignored message from unauthorized chat: ${fromChat}`);
+            return;
+        }
+
         // --- Media handling (photo / document) ---
         const mediaFiles = [];
 
@@ -333,96 +340,79 @@ class TelegramService {
             return; // Media message handled — skip text-only flow
         }
 
-        // --- Text-only handling (existing flow) ---
+        // --- Text-only handling ---
         if (!message.text) return;
 
-        // Strip bot username mention like /model@my_bot -> /model
-        let text = message.text.trim();
-        if (text.startsWith('/')) {
-            text = text.replace(/@[a-zA-Z0-9_]+/g, '').trim();
+        const text = message.text.trim();
+
+        // Command token: "/name" or "/name@botname" — the bot mention is stripped from the token only,
+        // arguments are passed through verbatim (emails, @scoped/packages, etc. stay intact).
+        const cmdMatch = text.match(/^\/([a-zA-Z0-9_-]+)(?:@[a-zA-Z0-9_]+)?(?:\s+([\s\S]*))?$/);
+        if (!cmdMatch) {
+            if (text.startsWith('/')) {
+                this.sendMessage(t('tg.unknown_command', { cmd: text.substring(1, 31) }));
+            } else if (this.onChatRequest) {
+                // 일반 텍스트 메시지 → AI 대화로 전달
+                this.onChatRequest(text);
+            }
+            return;
         }
+        const cmdName = cmdMatch[1];
+        const cmd = cmdName.toLowerCase();
+        const args = (cmdMatch[2] || '').trim();
 
-const lower = text.toLowerCase();
-
-        if (lower.startsWith('/model')) {
-            const modelArg = text.replace(/^\/model\s*/i, '').trim();
-            if (this.onModelRequest) {
-                this.onModelRequest(modelArg);
-            }
-        } else if (lower === '/resumen' || lower === '/acciones') {
-            if (this.onResumenRequest) {
-                this.onResumenRequest();
-            }
-        } else if (lower === '/status' || lower === '/cuota') {
-            if (this.onStatusRequest) this.onStatusRequest();
-        } else if (lower === '/help' || lower === '/ayuda') {
-            if (this.onHelpRequest) this.onHelpRequest();
-        } else if (lower === '/start') {
-            if (this.onStartRequest) this.onStartRequest();
-        } else if (lower === '/stop') {
-            if (this.onStopRequest) this.onStopRequest();
-        } else if (lower === '/autoaccept') {
-            if (this.onAutoAcceptRequest) this.onAutoAcceptRequest();
-        } else if (lower === '/config') {
-            if (this.onConfigRequest) this.onConfigRequest();
-        } else if (lower === '/queue') {
-            if (this.onQueueRequest) this.onQueueRequest();
-        } else if (lower.startsWith('/prd')) {
-            const prdText = text.replace(/^\/prd\s*/i, '').trim();
-            if (!prdText) {
-                this.sendMessage(t('tg.prd_usage'));
-            } else if (this.onPrdRequest) {
-                this.onPrdRequest(prdText);
-            }
-        } else if (lower.startsWith('/task')) {
-            const taskText = text.replace(/^\/task\s*/i, '').trim();
-            if (!taskText) {
-                this.sendMessage(t('tg.task_usage'));
-            } else if (this.onTaskRequest) {
-                this.onTaskRequest(taskText);
-            }
-        } else if (text.startsWith('/')) {
-            // Dynamic workflow slash command: /workflow-name optional args
-            const match = text.match(/^\/([a-zA-Z0-9_-]+)\s*(.*)/s);
-            if (match) {
-                const cmdName = match[1];
-                const argsText = match[2].trim();
+        switch (cmd) {
+            case 'help': case 'ayuda':
+                if (this.onHelpRequest) this.onHelpRequest();
+                return;
+            case 'status': case 'quota': case 'cuota':
+                if (this.onStatusRequest) this.onStatusRequest();
+                return;
+            case 'summary': case 'resumen': case 'acciones':
+                if (this.onSummaryRequest) this.onSummaryRequest();
+                return;
+            case 'model':
+                if (this.onModelRequest) this.onModelRequest(args);
+                return;
+            case 'start':
+                if (this.onStartRequest) this.onStartRequest();
+                return;
+            case 'stop':
+                if (this.onStopRequest) this.onStopRequest();
+                return;
+            case 'autoaccept':
+                if (this.onAutoAcceptRequest) this.onAutoAcceptRequest();
+                return;
+            case 'config':
+                if (this.onConfigRequest) this.onConfigRequest();
+                return;
+            case 'queue':
+                if (this.onQueueRequest) this.onQueueRequest();
+                return;
+            case 'prd':
+                // /prd 명령: 뒤의 텍스트를 onPrdRequest 콜백으로 전달 (write-prd 워크플로우)
+                if (!args) this.sendMessage(t('tg.prd_usage'));
+                else if (this.onPrdRequest) this.onPrdRequest(args);
+                return;
+            case 'task':
+                // /task 명령: 뒤의 텍스트를 onTaskRequest 콜백으로 직접 전달 (대화 형식)
+                if (!args) this.sendMessage(t('tg.task_usage'));
+                else if (this.onTaskRequest) this.onTaskRequest(args);
+                return;
+            default: {
+                // Dynamic workflow slash command: /workflow-name optional args (only known workflows run)
                 let isKnownWorkflow = false;
                 try {
-                    const workflows = scanWorkflows(this._workspaceRoot);
-                    isKnownWorkflow = workflows.some(w => w.command.toLowerCase() === cmdName.toLowerCase());
-                } catch (e) { }
-
+                    isKnownWorkflow = scanWorkflows(this._workspaceRoot).some(w => w.command.toLowerCase() === cmd);
+                } catch (e) { /* no workspace */ }
                 if (isKnownWorkflow && this.onWorkflowRequest) {
-                    this.onWorkflowRequest(cmdName, argsText);
+                    this.onWorkflowRequest(cmdName, args);
                 } else {
-                    this.sendMessage(
-                        `❌ Comando no reconocido: \`/${cmdName}\`\n\n` +
-                        `📌 *Comandos disponibles:*\n` +
-                        `• \`/cuota\` o \`/status\` — Ver cuota de IA y estado\n` +
-                        `• \`/resumen\` — Ver registro de acciones auto-aceptadas\n` +
-                        `• \`/model\` — Ver o cambiar modelo (/model [nombre])\n` +
-                        `• \`/autoaccept\` — Activar/desactivar auto-aceptación\n` +
-                        `• \`/help\` — Ver lista completa de comandos\n\n` +
-                        `💡 _No se ejecutan comandos desconocidos ni se envían a Antigravity._`
-                    );
+                    this.sendMessage(t('tg.unknown_command', { cmd: cmdName }));
                 }
             }
-        } else {
-            // Mensaje de texto plano (NO es comando slash)
-            // CRÍTICO: NO ENVIAR a chats ni sesiones de Antigravity (evita interferir en sesiones activas).
-            this.sendMessage(
-                `ℹ️ *Mensaje no enviado a Antigravity.*\n` +
-                `Para no interrumpir ni abrir chats en tus sesiones de Antigravity, el bot de Telegram solo atiende comandos.\n\n` +
-                `📌 *Comandos principales:*\n` +
-                `• \`/cuota\` o \`/status\` — Ver cuota de IA disponible y estado\n` +
-                `• \`/resumen\` — Ver las acciones auto-aceptadas en sesión\n` +
-                `• \`/model\` — Ver o cambiar modelo de IA\n` +
-                `• \`/help\` — Ayuda de comandos`
-            );
         }
     }
-
 
     /**
      * Make a POST request to the Telegram Bot API.
@@ -548,8 +538,8 @@ const lower = text.toLowerCase();
             // 1) 기존 하드코딩 명령어
             const builtInCommands = [
                 { command: 'help', description: t('tg.cmd_help') },
-                { command: 'cuota', description: 'Consultar cuota y modelos de IA disponibles' },
                 { command: 'status', description: t('tg.cmd_status') },
+                { command: 'quota', description: t('tg.cmd_quota') },
                 { command: 'start', description: t('tg.cmd_start') },
                 { command: 'stop', description: t('tg.cmd_stop') },
                 { command: 'autoaccept', description: t('tg.cmd_autoaccept') },
@@ -557,8 +547,8 @@ const lower = text.toLowerCase();
                 { command: 'queue', description: t('tg.cmd_queue') },
                 { command: 'task', description: t('tg.cmd_task') },
                 { command: 'prd', description: t('tg.cmd_prd') },
-                { command: 'model', description: 'Consultar o cambiar modelo de IA (/model [nombre])' },
-                { command: 'resumen', description: 'Ver resumen de acciones automáticas' }
+                { command: 'model', description: t('tg.cmd_model') },
+                { command: 'summary', description: t('tg.cmd_summary') }
             ];
 
             // 2) 동적 워크플로우 명령어 스캔 (공유 헬퍼 사용)
