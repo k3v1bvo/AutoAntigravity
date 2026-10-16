@@ -127,7 +127,8 @@ const translations = {
         'ext.tg_connected': 'AutoAntigravity: Telegram Bot connected 🚀',
         'ext.tg_connect_failed': 'AutoAntigravity: Could not connect Telegram Bot — check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.',
         'ext.tg_disconnected': 'AutoAntigravity: Telegram Bot disconnected.',
-        // Log markers for onRalphLog filter
+        // Log markers for onRalphLog filter — DO NOT TRANSLATE: Ralph log lines are hardcoded
+        // Korean and the filter does a literal substring match.
         'tg.marker_task_completed': '✅ 작업 완료',
         'tg.marker_all_tasks': '✅ 모든 작업',
     },
@@ -317,8 +318,9 @@ const translations = {
         'tg.queue_exec_failed': '❌ キュータスク送信失敗:',
         'ralph.quota_warn': 'Ralph Loop: モデル割当量超過。約%minutes分後に自動再開します。',
         'wf.default_desc': '📂 ワークフロー: %name',
-        'tg.marker_task_completed': '✅ 作業完了',
-        'tg.marker_all_tasks': '✅ すべての作業',
+        // ログマーカー: Ralph のログは韓国語固定なので翻訳しない（文字列一致で検索）
+        'tg.marker_task_completed': '✅ 작업 완료',
+        'tg.marker_all_tasks': '✅ 모든 작업',
     },
     'zh-cn': {
         'tg.connected': '🤖 AutoAntigravity Telegram 机器人已连接',
@@ -400,8 +402,9 @@ const translations = {
         'tg.queue_exec_failed': '❌ 队列任务发送失败:',
         'ralph.quota_warn': 'Ralph Loop: 模型配额耗尽。约 %minutes 分钟后自动恢复。',
         'wf.default_desc': '📂 工作流: %name',
-        'tg.marker_task_completed': '✅ 任务完成',
-        'tg.marker_all_tasks': '✅ 所有任务',
+        // 日志标记：Ralph 日志固定为韩文，按字符串匹配，请勿翻译
+        'tg.marker_task_completed': '✅ 작업 완료',
+        'tg.marker_all_tasks': '✅ 모든 작업',
     },
     es: {
         // Conexión de Telegram
