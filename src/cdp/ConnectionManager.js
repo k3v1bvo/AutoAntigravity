@@ -6,6 +6,7 @@ const http = require('http');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { buildDOMObserverScript } = require('../scripts/DOMObserver');
+const devToolsActivePort = require('./devToolsActivePort');
 
 // ─── Minimal WebSocket Client (Node.js built-in only) ──────────────────
 class MiniWebSocket extends EventEmitter {
@@ -208,10 +209,11 @@ class ConnectionManager {
      * @param {Function} options.getPort - Returns configured CDP port
      * @param {Function} options.getCustomTexts - Returns custom button texts array
      */
-    constructor({ log, getPort, getCustomTexts }) {
+    constructor({ log, getPort, getCustomTexts, getDevToolsDirs = null }) {
         this.log = log;
         this.getPort = getPort;
         this.getCustomTexts = getCustomTexts;
+        this.getDevToolsDirs = getDevToolsDirs;
 
         this.ws = null;
         this.msgId = 0;
@@ -219,6 +221,7 @@ class ConnectionManager {
         this.sessions = new Map();
         this.ignoredTargets = new Set();
         this.activeCdpPort = null;
+        this.devToolsWsPath = null;
 
         this.isRunning = false;
         this.isConnecting = false;
@@ -653,17 +656,48 @@ class ConnectionManager {
                     try {
                         const info = JSON.parse(data);
                         resolve(info.webSocketDebuggerUrl || null);
-                    } catch (e) { reject(e); }
+                    } catch (e) {
+                        if (this.devToolsWsPath) {
+                            resolve(`ws://127.0.0.1:${port}${this.devToolsWsPath}`);
+                        } else {
+                            reject(e);
+                        }
+                    }
                 });
             });
-            req.on('error', reject);
-            req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+            req.on('error', (err) => {
+                if (this.devToolsWsPath) {
+                    resolve(`ws://127.0.0.1:${port}${this.devToolsWsPath}`);
+                } else {
+                    reject(err);
+                }
+            });
+            req.on('timeout', () => {
+                req.destroy();
+                if (this.devToolsWsPath) {
+                    resolve(`ws://127.0.0.1:${port}${this.devToolsWsPath}`);
+                } else {
+                    reject(new Error('timeout'));
+                }
+            });
         });
     }
 
     async _findActivePort() {
         if (this.activeCdpPort && await this._pingPort(this.activeCdpPort)) {
             return this.activeCdpPort;
+        }
+
+        // 1. Try reading DevToolsActivePort generated dynamically by Chromium/Electron.
+        // This recovers situations where port 9559 is held in a ghost/zombie LISTEN state
+        // and Electron picked an alternative ephemeral port (e.g. 9558).
+        const searchDirs = typeof this.getDevToolsDirs === 'function' ? this.getDevToolsDirs() : null;
+        const devToolsInfo = devToolsActivePort.getDevToolsActivePort(searchDirs);
+        if (devToolsInfo && await this._pingPort(devToolsInfo.port)) {
+            this.log(`[CDP] ✓ Discovered active port ${devToolsInfo.port} from DevToolsActivePort (${devToolsInfo.filePath})`);
+            this.activeCdpPort = devToolsInfo.port;
+            this.devToolsWsPath = devToolsInfo.wsPath;
+            return devToolsInfo.port;
         }
 
         const configPort = this.getPort();

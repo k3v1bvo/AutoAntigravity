@@ -5,6 +5,7 @@ const vscode = require('vscode');
 const cp = require('child_process');
 const http = require('http');
 const { ConnectionManager } = require('./cdp/ConnectionManager');
+const { getDevToolsActivePort } = require('./cdp/devToolsActivePort');
 const { t } = require('./i18n');
 
 // Antigravity-specific accept commands (always polled every cycle).
@@ -85,6 +86,17 @@ class AutoAcceptManager {
             this.log(`[CDP] Debug port ${configPort} active ✓`);
             this.cdpAvailable = true;
             // CDP가 정상 작동하면 패치 기록 초기화 (다음에 포트가 안 열리면 다시 알림 가능)
+            if (this._extensionContext) {
+                this._extensionContext.globalState.update('autoAntigravity.shortcutPatched', false);
+            }
+            return true;
+        }
+
+        // 1. Try DevToolsActivePort before scanning or patching Windows shortcuts
+        const devToolsInfo = getDevToolsActivePort();
+        if (devToolsInfo && await this._pingPort(devToolsInfo.port)) {
+            this.log(`[CDP] ✓ Auto-discovered active CDP port ${devToolsInfo.port} from DevToolsActivePort (${devToolsInfo.filePath})`);
+            this.cdpAvailable = true;
             if (this._extensionContext) {
                 this._extensionContext.globalState.update('autoAntigravity.shortcutPatched', false);
             }

@@ -205,7 +205,7 @@
         }
     },
     "scripts": {
-        "test": "node --test test/telegram.test.js",
+        "test": "node --test test/telegram.test.js test/cdpRecovery.test.js",
         "package": "npx @vscode/vsce package",
         "release:patch": "npm version patch && git push origin HEAD --tags",
         "release:minor": "npm version minor && git push origin HEAD --tags",
